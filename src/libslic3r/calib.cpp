@@ -346,7 +346,8 @@ std::string CalibPressureAdvance::draw_box(GCodeWriter &writer, double min_x, do
             } else {
                 y += spacing_45;
                 x = x_min_bound;
-                comment = "when drawing the box infill, don't trigger the travel gcode that wastes time on retractions."
+                // Connect the two lines with a "print" move, but set the line width to almost nothing
+                // This avoids using the travel move code move_to which inserts a retract/deretract pair every time.
                 gcode << draw_line(writer, Vec2d(x, y), line_arg_line_width * 0.05, line_arg_height, line_arg_speed, comment); 
                 x += y - y_min_bound;
                 y                     = y_min_bound;
@@ -392,7 +393,6 @@ std::string CalibPressureAdvance::draw_box(GCodeWriter &writer, double min_x, do
                     } else {
                         y += spacing_45;
                     }
-                    comment = "when drawing the box infill, don't trigger the travel gcode that wastes time on retractions."
                     gcode << draw_line(writer, Vec2d(x, y), line_arg_line_width * 0.05, line_arg_height, line_arg_speed, comment); 
 
                     x = x_min_bound;
