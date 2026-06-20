@@ -12,7 +12,6 @@ float CalibPressureAdvance::find_optimal_PA_speed(const DynamicPrintConfig &conf
 {
     const double general_suggested_min_speed   = 100.0;
     double       filament_max_volumetric_speed = config.option<ConfigOptionFloats>("filament_max_volumetric_speed")->get_at(filament_idx);
-    // todo multi_extruders:
     const float  nozzle_diameter               = config.option<ConfigOptionFloats>("nozzle_diameter")->get_at(extruder_id);
     if (line_width <= 0.) line_width = Flow::auto_extrusion_width(frPerimeter, nozzle_diameter);
     Flow         pattern_line = Flow(line_width, layer_height, nozzle_diameter);
