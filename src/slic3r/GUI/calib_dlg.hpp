@@ -41,11 +41,14 @@ protected:
 	TextInput* m_tiStartPA;
 	TextInput* m_tiEndPA;
 	TextInput* m_tiPAStep;
+	wxStaticText* m_stGraduations{nullptr};
 	CheckBox* m_cbPrintNum;
 	TextInput* m_tiBMAccels;
 	TextInput* m_tiBMSpeeds;
 
 	Plater* m_plater;
+
+	void update_graduations();
 };
 
 class Temp_Calibration_Dlg : public DPIDialog

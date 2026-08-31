@@ -129,11 +129,12 @@ PA_Calibration_Dlg::PA_Calibration_Dlg(wxWindow* parent, wxWindowID id, Plater* 
     wxString start_pa_str    = _L("Start PA: ");
     wxString end_pa_str      = _L("End PA: ");
     wxString PA_step_str     = _L("PA step: ");
+    wxString graduations_str = _L("Graduations: ");
     wxString sp_accel_str    = _L("Accelerations: ");
     wxString sp_speed_str    = _L("Speeds: ");
     wxString cb_print_no_str = _L("Print numbers");
 
-    int text_max = GetTextMax(this, std::vector<wxString>{start_pa_str, end_pa_str, PA_step_str, sp_accel_str, sp_speed_str, cb_print_no_str});
+    int text_max = GetTextMax(this, std::vector<wxString>{start_pa_str, end_pa_str, PA_step_str, graduations_str, sp_accel_str, sp_speed_str, cb_print_no_str});
 
     auto st_size = wxSize(text_max, -1);
     auto ti_size = FromDIP(wxSize(120, -1));
@@ -169,6 +170,14 @@ PA_Calibration_Dlg::PA_Calibration_Dlg(wxWindow* parent, wxWindowID id, Plater* 
     PA_step_sizer->Add(PA_step_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
     PA_step_sizer->Add(m_tiPAStep  , 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
     settings_sizer->Add(PA_step_sizer, 0, wxLEFT, FromDIP(3));
+
+    // Graduations (calculated, read-only)
+    auto graduations_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto graduations_text = new wxStaticText(this, wxID_ANY, graduations_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_stGraduations = new wxStaticText(this, wxID_ANY, wxString("-"), wxDefaultPosition, ti_size, wxALIGN_LEFT);
+    graduations_sizer->Add(graduations_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    graduations_sizer->Add(m_stGraduations, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    settings_sizer->Add(graduations_sizer, 0, wxLEFT, FromDIP(3));
 
     // Print Numbers
     wxBoxSizer* cb_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -217,6 +226,12 @@ PA_Calibration_Dlg::PA_Calibration_Dlg(wxWindow* parent, wxWindowID id, Plater* 
     v_sizer->Add(bottom_sizer, 0, wxEXPAND);
 
     dlg_btns->GetOK()->Bind(wxEVT_BUTTON, &PA_Calibration_Dlg::on_start, this);
+
+    // Update graduations when PA values change (read-only calculated field)
+    auto bind_graduations_update = [this](wxCommandEvent& e) { update_graduations(); e.Skip(); };
+    m_tiStartPA->GetTextCtrl()->Bind(wxEVT_TEXT, bind_graduations_update);
+    m_tiEndPA->GetTextCtrl()->Bind(wxEVT_TEXT, bind_graduations_update);
+    m_tiPAStep->GetTextCtrl()->Bind(wxEVT_TEXT, bind_graduations_update);
 
     PA_Calibration_Dlg::reset_params();
 
@@ -283,6 +298,7 @@ void PA_Calibration_Dlg::reset_params() {
             m_tiPAStep->GetTextCtrl()->SetValue(wxString::FromDouble(0.02));
         }
     }
+    update_graduations();
 }
 
 void PA_Calibration_Dlg::on_start(wxCommandEvent& event) {
@@ -344,6 +360,24 @@ void PA_Calibration_Dlg::on_dpi_changed(const wxRect& suggested_rect) {
 
 void PA_Calibration_Dlg::on_show(wxShowEvent& event) {
     PA_Calibration_Dlg::reset_params();
+}
+
+void PA_Calibration_Dlg::update_graduations() {
+    if (!m_tiStartPA || !m_tiEndPA || !m_tiPAStep || !m_stGraduations)
+        return;
+    double start = 0.0, end = 0.0, step = 0.0;
+    bool ok = m_tiStartPA->GetTextCtrl()->GetValue().ToDouble(&start);
+    ok = ok && m_tiEndPA->GetTextCtrl()->GetValue().ToDouble(&end);
+    ok = ok && m_tiPAStep->GetTextCtrl()->GetValue().ToDouble(&step);
+    if (!ok || step < 10 * EPSILON || end < start) {
+        m_stGraduations->SetLabel(wxString("-"));
+        return;
+    }
+    // Number of graduations = (end - start) / step + 1, inclusive
+    int count = static_cast<int>(std::floor((end - start) / step + 1e-9)) + 1;
+    if (count < 1)
+        count = 1;
+    m_stGraduations->SetLabel(wxString::Format("%d", count));
 }
 
 // Temp calib dlg
