@@ -2,16 +2,36 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <set>
+#include <wx/colour.h>
+#include <wx/gdicmn.h>
+#include <wx/event.h>
+#include "slic3r/GUI/Widgets/StateColor.hpp"
+#include <vector>
+#include <string>
+#include "slic3r/GUI/GUI_Utils.hpp"
+#include <wx/dc.h>
+#include <wx/dcmemory.h>
+#include <utility>
+#include <wx/chartype.h>
+#include <tuple>
+#include <wx/arrstr.h>
 #include <wx/image.h>
+#include <wx/panel.h>
 #include <wx/sizer.h>
 #include <wx/dcclient.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcgraph.h>
+#include <wx/display.h>
 #include <wx/scrolwin.h>
+#include <wx/string.h>
 #include <wx/textctrl.h>
+#include <wx/toplevel.h>
+#include <wx/window.h>
 #include <wx/wrapsizer.h>
 #include <wx/tokenzr.h>
 
@@ -24,7 +44,7 @@
 #include "FilamentBitmapUtils.hpp"
 #include "wxExtensions.hpp"
 #include "Widgets/Button.hpp"
-#include "Widgets/CheckBox.hpp"
+#include "Widgets/LabeledCheckBox.hpp"
 #include "Widgets/ComboBox.hpp"
 #include "Widgets/DropDown.hpp"
 #include "Widgets/Label.hpp"
@@ -126,7 +146,6 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
                                          const std::vector<std::string>& physical_types)
     : DPIDialog(parent, wxID_ANY, _L("Add Mixed Filament"), wxDefaultPosition,
                 wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
-    , m_edit_mode(false)
     , m_physical_colors(physical_colors)
     , m_physical_names(physical_names)
     , m_physical_types(physical_types)
@@ -157,7 +176,6 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
     : DPIDialog(parent, wxID_ANY, _L("Edit Mixed Filament"), wxDefaultPosition,
                 wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
     , m_result(existing)
-    , m_edit_mode(true)
     , m_physical_colors(physical_colors)
     , m_physical_names(physical_names)
     , m_physical_types(physical_types)
@@ -181,8 +199,7 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
 
 void MixedFilamentDialog::on_dpi_changed(const wxRect&)
 {
-    int h = (num_components() >= 3) ? FromDIP(680) : FromDIP(580);
-    SetSize(FromDIP(439), h);
+    resize_keeping_centre();
     Refresh();
 }
 
@@ -613,14 +630,15 @@ void MixedFilamentDialog::build_ui()
     m_right_sizer->Add(create_material_selection(), 0, wxEXPAND);
     m_right_sizer->Add(create_gradient_section(), 0, wxEXPAND | wxTOP, FromDIP(7));
 
-    m_ratio_sizer = create_ratio_slider();
-    m_right_sizer->Add(m_ratio_sizer, 0, wxEXPAND | wxTOP, FromDIP(7));
-
     m_triangle_sizer = create_triangle_picker();
     m_right_sizer->Add(m_triangle_sizer, 0, wxALIGN_CENTER_HORIZONTAL | wxTOP, FromDIP(7));
 
     top_sizer->Add(m_right_sizer, 1, wxTOP | wxRIGHT | wxBOTTOM, FromDIP(20));
     main_sizer->Add(top_sizer, 0, wxEXPAND);
+
+    // The ratio bar spans the full dialog width, using the space below the preview too.
+    m_ratio_sizer = create_ratio_slider();
+    main_sizer->Add(m_ratio_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(25));
 
     main_sizer->Add(create_recommendation_grid(), 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(25));
 
@@ -847,23 +865,8 @@ wxBoxSizer* MixedFilamentDialog::create_ratio_slider()
     m_ratio_bar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
         wxBufferedPaintDC dc(m_ratio_bar);
         wxSize sz = m_ratio_bar->GetClientSize();
-
-        wxColour col_a = comp_colour(0), col_b = comp_colour(1);
-
-        for (int x = 0; x < sz.GetWidth(); ++x) {
-            double t = (double)x / sz.GetWidth();
-            wxColour c = blend_colors(col_a, col_b, 1.0 - t);
-            dc.SetPen(wxPen(c));
-            dc.DrawLine(x, 0, x, sz.GetHeight());
-        }
-
-        int div_x = (int)(ratio(1) / 100.0 * sz.GetWidth());
-        // Fixed in both themes, like the triangle picker's drag handle: the divider is drawn over
-        // blended filament colour, so it has to keep its contrast against data rather than chrome.
-        dc.SetPen(wxPen(wxColour(80, 80, 80), FromDIP(4)));
-        dc.DrawLine(div_x, 0, div_x, sz.GetHeight());
-        dc.SetPen(wxPen(*wxWHITE, FromDIP(2)));
-        dc.DrawLine(div_x, 0, div_x, sz.GetHeight());
+        draw_mixed_ratio_blend_bar(dc, wxRect(0, 0, sz.GetWidth(), sz.GetHeight()),
+                                   comp_colour(0), comp_colour(1), ratio(1) / 100.0, MIN_COMPONENT_RATIO / 100.0);
     });
 
     m_ratio_bar->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& e) {
@@ -919,52 +922,8 @@ wxBoxSizer* MixedFilamentDialog::create_ratio_slider()
 }
 
 // ---- Triangle (ternary) ratio picker ----
-
-// Barycentric coordinate utilities
-struct TriPoint { double x, y; };
-
-static double tri_signed_area2(TriPoint a, TriPoint b, TriPoint c)
-{
-    return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
-}
-
-static bool tri_contains(TriPoint p, TriPoint v0, TriPoint v1, TriPoint v2)
-{
-    double total = tri_signed_area2(v0, v1, v2);
-    if (std::abs(total) < 1e-9) return false;
-    double s0 = tri_signed_area2(p, v1, v2) / total;
-    double s1 = tri_signed_area2(v0, p, v2) / total;
-    double s2 = 1.0 - s0 - s1;
-    return s0 >= -0.001 && s1 >= -0.001 && s2 >= -0.001;
-}
-
-static void tri_barycentric(TriPoint p, TriPoint v0, TriPoint v1, TriPoint v2,
-                            double& w0, double& w1, double& w2)
-{
-    double total = std::abs(tri_signed_area2(v0, v1, v2));
-    if (total < 1e-9) { w0 = w1 = w2 = 1.0 / 3.0; return; }
-    w0 = std::abs(tri_signed_area2(p, v1, v2)) / total;
-    w1 = std::abs(tri_signed_area2(v0, p, v2)) / total;
-    w2 = 1.0 - w0 - w1;
-    w0 = std::clamp(w0, 0.0, 1.0);
-    w1 = std::clamp(w1, 0.0, 1.0);
-    w2 = std::clamp(w2, 0.0, 1.0);
-    double s = w0 + w1 + w2;
-    if (s > 0) { w0 /= s; w1 /= s; w2 /= s; }
-}
-
-static TriPoint tri_clamp(TriPoint p, TriPoint v0, TriPoint v1, TriPoint v2)
-{
-    double w0, w1, w2;
-    tri_barycentric(p, v0, v1, v2, w0, w1, w2);
-    w0 = std::clamp(w0, 0.0, 1.0);
-    w1 = std::clamp(w1, 0.0, 1.0);
-    w2 = std::clamp(w2, 0.0, 1.0);
-    double s = w0 + w1 + w2;
-    if (s > 0) { w0 /= s; w1 /= s; w2 /= s; }
-    return {w0 * v0.x + w1 * v1.x + w2 * v2.x,
-            w0 * v0.y + w1 * v1.y + w2 * v2.y};
-}
+// The barycentric utilities (TriPoint, tri_contains, tri_barycentric, tri_clamp) live in
+// FilamentBitmapUtils so the Publish dialog can mirror this picker read-only.
 
 wxBoxSizer* MixedFilamentDialog::create_triangle_picker()
 {
@@ -998,72 +957,16 @@ wxBoxSizer* MixedFilamentDialog::create_triangle_picker()
         wxSize sz = m_triangle_panel->GetClientSize();
         auto [v0, v1, v2] = get_vertices();
 
-        wxColour tri_bg = StateColor::darkModeColorFor(*wxWHITE);
-        dc.SetBrush(wxBrush(tri_bg));
-        dc.SetPen(*wxTRANSPARENT_PEN);
-        dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
-
-        wxColour c0 = comp_colour(0), c1 = comp_colour(1), c2 = comp_colour(2);
-
-        const bool cache_valid = m_tri_cache_bmp.IsOk() &&
-            m_tri_cache_size == sz &&
-            m_tri_cache_c0 == c0 && m_tri_cache_c1 == c1 && m_tri_cache_c2 == c2;
-
-        if (!cache_valid) {
-            int min_y = (int)std::min({v0.y, v1.y, v2.y});
-            int max_y = (int)std::max({v0.y, v1.y, v2.y});
-            int min_x = (int)std::min({v0.x, v1.x, v2.x});
-            int max_x = (int)std::max({v0.x, v1.x, v2.x});
-
-            m_tri_cache_bmp = wxBitmap(sz.GetWidth(), sz.GetHeight(), 24);
-            wxMemoryDC mdc(m_tri_cache_bmp);
-            mdc.SetBrush(wxBrush(tri_bg));
-            mdc.SetPen(*wxTRANSPARENT_PEN);
-            mdc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
-
-            for (int py = min_y; py <= max_y; ++py) {
-                for (int px = min_x; px <= max_x; ++px) {
-                    TriPoint p = {(double)px, (double)py};
-                    if (!tri_contains(p, v0, v1, v2)) continue;
-                    double w0, w1, w2;
-                    tri_barycentric(p, v0, v1, v2, w0, w1, w2);
-                    unsigned char mr, mg, mb;
-                    if (w0 + w1 > 1e-6) {
-                        float t01 = static_cast<float>(w1 / (w0 + w1));
-                        Slic3r::filament_mixer_lerp(c0.Red(), c0.Green(), c0.Blue(),
-                                                    c1.Red(), c1.Green(), c1.Blue(),
-                                                    t01, &mr, &mg, &mb);
-                        float t2 = static_cast<float>(w2);
-                        Slic3r::filament_mixer_lerp(mr, mg, mb,
-                                                    c2.Red(), c2.Green(), c2.Blue(),
-                                                    t2, &mr, &mg, &mb);
-                    } else {
-                        mr = c2.Red(); mg = c2.Green(); mb = c2.Blue();
-                    }
-                    mdc.SetPen(wxPen(wxColour(mr, mg, mb)));
-                    mdc.DrawPoint(px, py);
-                }
-            }
-
-            mdc.SetPen(wxPen(StateColor::darkModeColorFor(wxColour("#CECECE")), 1));
-            mdc.SetBrush(*wxTRANSPARENT_BRUSH);
-            wxPoint pts[3] = {{(int)v0.x, (int)v0.y}, {(int)v1.x, (int)v1.y}, {(int)v2.x, (int)v2.y}};
-            mdc.DrawPolygon(3, pts);
-
-            mdc.SelectObject(wxNullBitmap);
-            m_tri_cache_c0 = c0; m_tri_cache_c1 = c1; m_tri_cache_c2 = c2;
-            m_tri_cache_size = sz;
-        }
-
-        dc.DrawBitmap(m_tri_cache_bmp, 0, 0);
-
-        // Drag handle (always redrawn on top of cached bitmap)
-        double hx = m_tri_wx * v0.x + m_tri_wy * v1.x + m_tri_wz * v2.x;
-        double hy = m_tri_wx * v0.y + m_tri_wy * v1.y + m_tri_wz * v2.y;
-        int handle_r = FromDIP(5);
-        dc.SetBrush(*wxWHITE_BRUSH);
-        dc.SetPen(wxPen(wxColour("#262E30"), FromDIP(2)));
-        dc.DrawCircle((int)hx, (int)hy, handle_r);
+        // Draw the background, cached barycentric fill, outline and drag-handle marker through the
+        // shared picker painter (same geometry the read-only Publish preview uses).
+        draw_mixed_triangle_picker(dc, sz,
+                                   {comp_colour(0), comp_colour(1), comp_colour(2)},
+                                   {m_tri_wx, m_tri_wy, m_tri_wz},
+                                   {StateColor::darkModeColorFor(*wxWHITE),
+                                    StateColor::darkModeColorFor(wxColour("#CECECE")),
+                                    StateColor::darkModeColorFor(wxColour("#262E30")),
+                                    StateColor::darkModeColorFor(COLOR_LABEL_MUTED)},
+                                   MIN_COMPONENT_RATIO / 100.0);
 
         if (m_result.ratios.size() >= 3) {
             dc.SetFont(::Label::Body_10);
@@ -1166,14 +1069,10 @@ wxBoxSizer* MixedFilamentDialog::create_gradient_section()
 {
     m_gradient_sizer = new wxBoxSizer(wxHORIZONTAL);
 
-    m_chk_gradient = new ::CheckBox(this);
+    m_chk_gradient = new LabeledCheckBox(this, _L("Gradient Effect"));
     m_chk_gradient->SetValue(m_result.gradient_enabled);
-    m_chk_gradient->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& e) { e.Skip(); on_gradient_toggled(); });
-    m_gradient_sizer->Add(m_chk_gradient, 0, wxALIGN_CENTER_VERTICAL | wxTOP | wxBOTTOM, FromDIP(4));
-
-    m_label_gradient = new wxStaticText(this, wxID_ANY, _L("Gradient Effect"));
-    m_label_gradient->SetFont(::Label::Body_13);
-    m_gradient_sizer->Add(m_label_gradient, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
+    m_chk_gradient->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& e) { e.Skip(); on_gradient_toggled(); });
+    m_gradient_sizer->Add(m_chk_gradient, 0, wxALIGN_CENTER_VERTICAL | wxTOP | wxBOTTOM, FromDIP(2));
 
     m_combo_gradient_dir = new ComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition,
                                         wxSize(FromDIP(152), FromDIP(24)), 0, nullptr, wxCB_READONLY);
@@ -1207,17 +1106,12 @@ wxBoxSizer* MixedFilamentDialog::create_gradient_section()
     // Per-part gradient toggle sits BELOW the curve editor.
     m_per_part_gradient_sizer = new wxBoxSizer(wxHORIZONTAL);
 
-    m_chk_per_part_gradient = new ::CheckBox(this);
+    m_chk_per_part_gradient = new LabeledCheckBox(this, _L("Enable per-part gradient effect"));
     m_chk_per_part_gradient->SetValue(m_result.per_part_gradient);
-    m_chk_per_part_gradient->Bind(wxEVT_TOGGLEBUTTON,
+    m_chk_per_part_gradient->Bind(wxEVT_CHECKBOX,
         [this](wxCommandEvent& e) { e.Skip(); on_per_part_gradient_toggled(); });
     m_per_part_gradient_sizer->Add(m_chk_per_part_gradient, 0,
-        wxALIGN_CENTER_VERTICAL | wxTOP | wxBOTTOM, FromDIP(4));
-
-    m_label_per_part_gradient = new wxStaticText(this, wxID_ANY, _L("Enable per-part gradient effect"));
-    m_label_per_part_gradient->SetFont(::Label::Body_13);
-    m_per_part_gradient_sizer->Add(m_label_per_part_gradient, 0,
-        wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
+        wxALIGN_CENTER_VERTICAL | wxTOP | wxBOTTOM, FromDIP(2));
 
     outer->Add(m_per_part_gradient_sizer, 0, wxEXPAND | wxTOP, FromDIP(2));
     m_per_part_gradient_sizer->ShowItems(m_result.gradient_enabled);
@@ -1243,7 +1137,7 @@ wxBoxSizer* MixedFilamentDialog::create_recommendation_grid()
     outer->Add(title_sizer, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
 
     m_recommendation_scroll = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(116)));
-    m_recommendation_scroll->SetScrollRate(0, 5);
+    m_recommendation_scroll->SetScrollRate(0, FromDIP(20));
     m_recommendation_scroll->SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#F8F8F8")));
 
     m_recommendation_grid = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
@@ -1493,15 +1387,7 @@ void MixedFilamentDialog::on_gradient_toggled()
     // Toggling the curve editor changes the right column height (and width when
     // turning gradient on), so the dialog must follow or the recommendation list
     // gets squeezed off-screen. Same trick as 2-color -> 3-color switching.
-    const wxSize new_size = compute_dialog_size();
-    if (GetSize() != new_size) {
-        const wxRect old_rect = GetRect();
-        const wxPoint center(old_rect.x + old_rect.width / 2,
-                             old_rect.y + old_rect.height / 2);
-        SetSize(new_size);
-        SetPosition(wxPoint(center.x - new_size.x / 2,
-                            center.y - new_size.y / 2));
-    }
+    resize_keeping_centre();
 
     Layout();
     Refresh();
@@ -1774,7 +1660,7 @@ void MixedFilamentDialog::update_ok_button_state()
             wxString parts;
             for (auto it = type_groups.begin(); it != type_groups.end(); ++it) {
                 if (!parts.empty())
-                    parts += _L(" and ");
+                    parts += "; ";
                 wxString slots;
                 for (size_t j = 0; j < it->second.size(); ++j) {
                     if (!slots.empty()) slots += ", ";
@@ -1782,7 +1668,7 @@ void MixedFilamentDialog::update_ok_button_state()
                 }
                 parts += wxString::Format(_L("Slot %s (%s)"), slots, wxString::FromUTF8(it->first));
             }
-            m_type_mismatch_msg = parts + " " + _L("cannot be mixed. Please select the same filament type.");
+            m_type_mismatch_msg = wxString::Format(_L("Different filament types cannot be mixed: %s. Please select the same filament type."), parts);
         } else {
             m_type_mismatch_msg.clear();
         }
@@ -1907,7 +1793,6 @@ void MixedFilamentDialog::update_component_count_ui()
     if (m_gradient_sizer) {
         bool show_gradient = is_two;
         m_chk_gradient->Show(show_gradient);
-        if (m_label_gradient) m_label_gradient->Show(show_gradient);
         m_combo_gradient_dir->Show(show_gradient && m_result.gradient_enabled);
         if (m_per_part_gradient_sizer)
             m_per_part_gradient_sizer->ShowItems(show_gradient && m_result.gradient_enabled);
@@ -1934,14 +1819,25 @@ void MixedFilamentDialog::update_component_count_ui()
         m_btn_remove_material->SetToolTip(is_three ? _L("Remove the third material") : wxString());
     }
 
-    const wxSize new_size = compute_dialog_size();
-    const wxRect old_rect = GetRect();
-    const wxPoint center(old_rect.x + old_rect.width / 2,
-                         old_rect.y + old_rect.height / 2);
-    SetSize(new_size);
-    SetPosition(wxPoint(center.x - new_size.x / 2,
-                        center.y - new_size.y / 2));
+    resize_keeping_centre();
     Layout();
+}
+
+void MixedFilamentDialog::resize_keeping_centre()
+{
+    // Until it is shown the dialog has no display of its own (on Wayland none at all), so use
+    // the parent's, which is also where CentreOnParent() places it.
+    const wxRect area     = wxDisplay(IsShown() ? static_cast<wxWindow*>(this) : GetParent()).GetClientArea();
+    wxSize       new_size = compute_dialog_size();
+    new_size.DecTo(area.GetSize()); // never larger than the display
+    if (GetSize() == new_size)
+        return;
+    // Grow or shrink around the current centre, but keep the whole dialog inside its display
+    // so the buttons don't end up under the taskbar.
+    const wxPoint centre = GetPosition() + GetSize() / 2;
+    const int     x      = std::max(area.x, std::min(centre.x - new_size.x / 2, area.GetRight() + 1 - new_size.x));
+    const int     y      = std::max(area.y, std::min(centre.y - new_size.y / 2, area.GetBottom() + 1 - new_size.y));
+    SetSize(x, y, new_size.x, new_size.y, wxSIZE_ALLOW_MINUS_ONE);
 }
 
 } // namespace GUI

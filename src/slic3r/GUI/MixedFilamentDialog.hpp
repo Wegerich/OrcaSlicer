@@ -2,11 +2,17 @@
 #define slic3r_MixedFilamentDialog_hpp_
 
 #include <array>
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
 #include <wx/bitmap.h>
+#include <wx/gdicmn.h>
+#include <wx/event.h>
+#include <wx/colour.h>
 #include <wx/panel.h>
+#include <wx/sizer.h>
+#include <wx/string.h>
 #include <wx/tglbtn.h>
 #include <wx/stattext.h>
 
@@ -14,7 +20,7 @@
 #include "libslic3r/FilamentMixer.hpp"
 
 class Button;
-class CheckBox;
+class LabeledCheckBox;
 class ComboBox;
 class wxMouseEvent;
 class wxScrolledWindow;
@@ -95,6 +101,8 @@ private:
     // Picks dialog (width, height) based on current state so the gradient curve
     // editor and the recommendation list stay visible at the same time.
     wxSize compute_dialog_size() const;
+    // Resizes the dialog to compute_dialog_size() around its centre, clamped to its display.
+    void resize_keeping_centre();
     void rebuild_all_combos();
     void rebuild_recommendation_items();
     void refresh_curve_editor_colors();
@@ -115,7 +123,6 @@ private:
     wxColour        comp_colour(size_t i) const;
 
     MixedFilamentResult         m_result;
-    bool                        m_edit_mode{false};
     std::vector<std::string>    m_physical_colors;
     std::vector<std::string>    m_physical_names;
     std::vector<std::string>    m_physical_types;
@@ -135,14 +142,12 @@ private:
     RatioLabelPanel*            m_label_ratio_b{nullptr};
     wxPanel*                    m_ratio_editor_panel{nullptr};
     wxTextCtrl*                 m_ratio_editor{nullptr};
-    CheckBox*                   m_chk_gradient{nullptr};
-    wxStaticText*               m_label_gradient{nullptr};
+    LabeledCheckBox*            m_chk_gradient{nullptr};
     ComboBox*                   m_combo_gradient_dir{nullptr};
     wxBoxSizer*                 m_gradient_sizer{nullptr};
     GradientCurveEditor*        m_curve_editor{nullptr};
     wxBoxSizer*                 m_curve_sizer{nullptr};
-    CheckBox*                   m_chk_per_part_gradient{nullptr};
-    wxStaticText*               m_label_per_part_gradient{nullptr};
+    LabeledCheckBox*            m_chk_per_part_gradient{nullptr};
     wxBoxSizer*                 m_per_part_gradient_sizer{nullptr};
     Button*                     m_btn_add_material{nullptr};
     Button*                     m_btn_remove_material{nullptr};
@@ -170,10 +175,6 @@ private:
     // Triangle picker drag point (barycentric weights)
     double m_tri_wx{0.333}, m_tri_wy{0.333}, m_tri_wz{0.334};
 
-    // Cached triangle color bitmap (invalidated when colors or size change)
-    wxBitmap m_tri_cache_bmp;
-    wxColour m_tri_cache_c0, m_tri_cache_c1, m_tri_cache_c2;
-    wxSize   m_tri_cache_size;
     std::array<RatioLabelPanel*, 3> m_triangle_ratio_labels{nullptr, nullptr, nullptr};
 };
 
